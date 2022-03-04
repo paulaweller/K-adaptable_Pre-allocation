@@ -1,5 +1,13 @@
 using LinearAlgebra, StatsPlots, PrettyTables, Dates, Random
 
+mutable struct AllocationInstance
+    loc_I::Matrix{Int64}
+    loc_J::Matrix{Int64}
+    W::Int64
+    D::Int64
+    pc::Float64
+end
+const GRB_ENV = Gurobi.Env()
 """
     generate_instance(I_inst, J_inst, seed, demand_bound=5, cont_perc=0.5, agg_supply_bound=round(Int, cont_perc*demand_bound*J), plot_loc=false)
 
@@ -20,7 +28,7 @@ function generate_instance(I_inst, J_inst, seed; demand_bound=5, cont_perc=0.5, 
 
     # seed for reproducibility
     Random.seed!(seed)
-
+    
     # set of locations for service and demand points
     loc_set = []
     # locations of service points
@@ -43,6 +51,7 @@ function generate_instance(I_inst, J_inst, seed; demand_bound=5, cont_perc=0.5, 
     loc_I_inst = sort(loc_I_inst, dims=1)
     loc_J_inst = sort(loc_J_inst, dims=1)
 
+    instance = AllocationInstance(loc_I_inst,loc_J_inst,agg_supply_bound,demand_bound,cont_perc)
     # plot service and demand points
     if plot_loc == true
 
@@ -60,191 +69,45 @@ function generate_instance(I_inst, J_inst, seed; demand_bound=5, cont_perc=0.5, 
                             ))
     end
 
-    return loc_I_inst, loc_J_inst, demand_bound, cont_perc, agg_supply_bound
-
+    return instance
 end
 
 """
-    uncset_constraints(d, j1, j2, loc_J)
-
-Construct constraints on the uncertainty set for a given demand scenario d and pair of demand points j1, j2.  
-"""
-function uncset_constraints(d, j1, j2, loc_J)
- 
-    # extract loctions of the two demand points
-    loc1 = loc_J[j1, :]
-    loc2 = loc_J[j2, :]
-
-    # extract demand values at the two demand points
-    d1 = d[j1]
-    d2 = d[j2]
-    
-    # constructing the constraint: if two demand points are closely locted, they must be similarly affected
-    # left hand side of the constraint: difference in demand at the two points
-    lhs1 = norm(d1-d2, Inf)
-    # right hand side of the contraint: distance of the two demand points
-    rhs1 = (1*norm(loc1 - loc2, Inf))
-    
-    return [lhs1, rhs1] 
-end
-
-"""
-    enum_uncset(D, loc_J, pc)
+    enum_uncset(instance)
 
 Construct the complete uncertainty set for maximal demand D and affected percentage pc.
 """
-function enum_uncset(D, loc_J, pc)
+function enum_uncset(instance::AllocationInstance)
 
     # number of demand points
-    J = size(loc_J, 1)
-
+    J = size(instance.loc_J, 1)
     # demand scenarios that satisfy the constraints
-    uncset_enum = []
+    enum = []
 
     # all possible demand configurations, i.e. {0, ..., D}^J
-    it = Iterators.repeated(0:D,J)
-
-    for d in Iterators.product(it...)
-
+    it = Iterators.repeated(0:instance.D,J)
+    itprod = Iterators.product(it...)
+    for d in itprod
         # d must not affect more than the given percentage
-        if sum(d) <= round(Int, pc*D*J)
-
-            # d is a candidate
-            add = true
+        if sum(d) <= floor(Int, instance.pc*instance.D*J)
             # every pair of demand points must be considered
-            for (j1,j2) in Iterators.product(1:J,1:J)
-                if j1 < j2
-                    # build constraints
-                    UC = uncset_constraints(d, j1, j2, loc_J)
-                    # check constraints
-                    for eq in 1:2:length(UC)
-                        lhs = eval(UC[eq])
-                        rhs = eval(UC[eq+1])
-
-                        # if constraint is violated, don't add this demand scenario
-                        if (lhs <= rhs)  == false
-                            add = false
-                        end
-                    end
-                end
-            end
-        else 
-            add = false
-        end
-        if add == true
-            push!(uncset_enum, d)
-        end
-    end
-    return uncset_enum
-end
-
-"""
-    sample_uncset(s, D, loc_J, pc)
-
-Collect s samples from the uncset
-"""
-function sample_uncset(s, D, loc_J, pc)
-
-    J = size(loc_J, 1)
-    samples = []
-
-    while length(samples) < s
-        @info samples
-
-        # a maximum of pc*D*J demand points can have positive demand
-        d_bound = round(Int, pc*D*J)
-        d_pos = min(J, d_bound)
-        d_pos_val = rand(0:D, d_pos)
-        while sum(d_pos_val) > d_bound
-            @info d_pos_val
-            d_pos_val = rand(0:D, d_pos)
-        end
-        # randomly select positions for the positive demand
-        positions = []
-        while length(positions) < d_pos
-            positions = union(rand(1:J, d_pos))
-        end
-        d = zeros(J)
-        for i in 1:length(positions)
-            pos = positions[i]
-            d[pos] = d_pos_val[i]
-        end
-
-        add = true
-        
-        # every pair of demand points must be considered
-        for (j1,j2) in Iterators.product(1:J,1:J)
-            if j1 < j2
-                # build constraints
-                UC = uncset_constraints(d, j1, j2, loc_J)
-                # check constraints
-                for eq in 1:2:length(UC)
-                    lhs = eval(UC[eq])
-                    rhs = eval(UC[eq+1])
-
+            add = true
+            for j1 in 1:J
+                for j2 in (j1+1):J
                     # if constraint is violated, don't add this demand scenario
-                    if (lhs <= rhs)  == false
+                    if !(abs(d[j1]-d[j2]) <= norm(instance.loc_J[j1,:]-instance.loc_J[j2,:],Inf))
                         add = false
                     end
                 end
             end
+        else
+            add = false
         end
-        if add == true
-            push!(samples, d)
-            samples = union(samples)
-        end
-    end
-    return samples
-end
-
-"""
-    enum_supp(I,W)
-
-Construct all possible supply storage configurations.
-"""
-function enum_supp(I,W)
-
-    supp_enum = []
-    it = Iterators.repeated(0:W,I)
-    for w in Iterators.product(it...)
-        if sum(w) <= W
-            push!(supp_enum, w)
+        if add == true 
+            push!(enum, d)
         end
     end
-    supp_enum
-
-end
-
-"""
-    print_result_table(loc_I, loc_J, W, D, pc)
-
-Solve the problem with the static, adaptable (6 iterations) and completely adaptable approach and print the results in a pretty table.
-"""
-function print_result_table(loc_I, loc_J, W, D, pc)
-
-    # solve static problem
-    obj_st, supp_st, trans_st, unsat_st, scen_st = solve_static(loc_I, loc_J, W, D, pc)
-
-    # solve fully adaptable problem
-    obj_f, supp_f, scen_f, trans_f, p_f = solve_comp(loc_I, loc_J, W, D, pc)
-
-    #solve k-adapt
-    obj_k, w_k, q_k, p_k, p_true_k = k_adapt_solution(6, loc_I, loc_J, W, D, pc)
-
-    header = ["static", "full adapt", "k-adapt it. 1", "k-adapt it. 3", "k-adapt it. 6"]
-
-    rows = ["objective", "supply storage", "worst-case demand", "worst-case transport", "number of plans"]
-
-    data =  [obj_st         obj_f           obj_k[1]        obj_k[3]        obj_k[6] ;
-            Any[supp_st]    Any[supp_f]     Any[w_k[1]]    Any[w_k[3]]    Any[w_k[6]];
-            Any[scen_st]    Any[scen_f]     0               0               0;
-            Any[trans_st]   Any[trans_f]    0               0               0;
-            1               p_f           p_k[1]            p_k[3]            p_k[6]
-            ]
-    #TODO add q
-
-    pretty_table(data, header, row_names = rows, alignment = :c)
-    
+    return enum
 end
 
 """
@@ -317,7 +180,7 @@ function k_curve(obj_values, k_number; comp_adapt=0, static=obj_values[1], obser
     for i in 1:length(k_number)
         push!(static_obj, static)
     end
-    plot(k_number, static_obj, lw = 3, color=RGB(251/255, 77/255, 61/255), label = "static", xlabel = "k", ylabel= yaxes, title = "n=$n_val, m=$m_val, d_max = $d_max, p=$p")
+    plot(k_number, static_obj, lw = 3, color=RGB(210/255, 22/255, 53/255), label = "static", xlabel = "k", ylabel= yaxes)
 
     # if given, plot observable costs for each scenario in the uncertainty set
     if observ !== 0
@@ -327,15 +190,15 @@ function k_curve(obj_values, k_number; comp_adapt=0, static=obj_values[1], obser
     end
 
     # plot the k-adaptable objective
-    plot!(k_number, obj_values, lw = 3, color=RGB(52/255, 89/255, 149/255), label = "k-adapt")
+    plot!(k_number, obj_values, lw = 3, color=RGB(0/255, 71/255, 119/255), label = "k-adapt")
     
-    # plot the completely adaptable objective
+    # plot the completely adaptable objective 207, 159, 205
     if comp_adapt !== 0
         comp_adapt_obj = []
         for i in 1:length(k_number)
             push!(comp_adapt_obj, comp_adapt)
         end
-        plot!(k_number, comp_adapt_obj, lw = 3, color=RGB(73/255, 159/255, 104/255),label = "comp. adapt.")
+        plot!(k_number, comp_adapt_obj, lw = 3, color=RGB(207/255, 159/255, 205/255),label = "comp. adapt.")
     end
     # save plot to file
     savefig("results/kcurve.pdf")
@@ -491,4 +354,3 @@ function box_plot_from_files(filenames, labelnames)
     savefig(obj_plot, "results/boxplot_obj.pdf")
     savefig(time_plot, "results/boxplot_time.pdf")
 end
-
