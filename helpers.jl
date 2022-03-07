@@ -1,4 +1,4 @@
-using LinearAlgebra, StatsPlots, PrettyTables, Dates, Random
+using LinearAlgebra, StatsPlots, PrettyTables, Dates, Random, Statistics
 
 mutable struct AllocationInstance
     loc_I::Matrix{Int64}
@@ -7,7 +7,7 @@ mutable struct AllocationInstance
     D::Int64
     pc::Float64
 end
-const GRB_ENV = Gurobi.Env()
+#const GRB_ENV = Gurobi.Env()
 """
     generate_instance(I_inst, J_inst, seed, demand_bound=5, cont_perc=0.5, agg_supply_bound=round(Int, cont_perc*demand_bound*J), plot_loc=false)
 
@@ -116,11 +116,11 @@ end
 Find the best of the plans in q for this uncertainty realization d_real.
 """
 function find_plan(d_real, q, c)
-
+    c_slack = 1+max(c...)
     obj_val = 10^10
     best_q = []
     for p in 1:size(q, 3)
-        obj_val_it = 10*sum(max(0, d_real[j]-sum(q[i,j,p] for i in 1:size(q,1))) for j in 1:size(q,2)) + sum(c[i,j]*q[i,j,p] for i in 1:size(q,1), j in 1:size(q,2))
+        obj_val_it = c_slack*sum(max(0, d_real[j]-sum(q[i,j,p] for i in 1:size(q,1))) for j in 1:size(q,2)) + sum(c[i,j]*q[i,j,p] for i in 1:size(q,1), j in 1:size(q,2))
         if obj_val_it < obj_val
             obj_val = obj_val_it
             best_q = q[:,:,p]
@@ -215,18 +215,17 @@ function k_curve_obs(k_number, observ; n_val=0, m_val=0, d_max=5, p=0.5, plot_sc
     if plot_scenarios==true
         it = hcat("observable objective",fill("",1,size(observ, 2)-1))
         plot(k_number, observ,
-                line= (0.5, 1.5), 
-                color=RGB(252/255, 204/255, 95/255), 
-                label=it, 
-                title = "n=$n_val, m=$m_val, d_max = $d_max, p=$p",
+                line= (0.5, 0.5), 
+                color=RGB(122/255, 200/255, 255/255), # light blue
+                #color = RGB(207/255, 159/255, 205/255), # purple
+                label=it,
                 xlabel = "k", ylabel= "objective")
     end
     # calculate mean of observable costs
     M = mean(observ, dims=2)
 
     # plot mean
-    plot!(k_number, M, lw=3, color=RGB(251/255, 77/255, 61/255), label="observable mean", title = "n=$n_val, m=$m_val, d_max = $d_max, p=$p",
-    xlabel = "k", ylabel= "objective")
+    plot!(k_number, M, lw=3, color=RGB(210/255, 22/255, 53/255), label="observable mean")
 
     # compute and plot quantiles
     quantiles = zeros(length(k_number), 2)
@@ -236,7 +235,7 @@ function k_curve_obs(k_number, observ; n_val=0, m_val=0, d_max=5, p=0.5, plot_sc
         quantiles[k, 1] = temp[1]
         quantiles[k, 2] = temp[2]
     end
-    plot!(k_number, quantiles, line=(1, 2), color=RGB(52/255, 89/255, 149/255), style=:dash, label=["0.1 quantile" "0.9 quantile"])
+    plot!(k_number, quantiles, lw=3, color=RGB(0/255, 71/255, 119/255), style=:dash, label=["0.1 quantile" "0.9 quantile"])
     savefig("results/kcurve_obs.pdf")
 end
 
@@ -349,8 +348,8 @@ function box_plot_from_files(filenames, labelnames)
     end
     obj_plot = plot(xlabel="m", ylabel="objective %")
     time_plot = plot(xlabel="m", ylabel="time in s")
-    boxplot!(obj_plot, labelnames, plot_data_obj, leg=false)
-    boxplot!(time_plot, labelnames, plot_data_time, leg=false)
+    boxplot!(obj_plot, labelnames, plot_data_obj, leg=false, linewidth=2,colour = [RGB(122/255, 200/255, 255/255) RGB(0/255, 71/255, 119/255) RGB(207/255, 159/255, 205/255) RGB(210/255, 22/255, 53/255)],linecolour= :match,fillalpha = 0.4)
+    boxplot!(time_plot, labelnames, plot_data_time, leg=false, linewidth=2,colour = [RGB(122/255, 200/255, 255/255) RGB(0/255, 71/255, 119/255) RGB(207/255, 159/255, 205/255) RGB(210/255, 22/255, 53/255)],linecolour= :match,fillalpha = 0.4)
     savefig(obj_plot, "results/boxplot_obj.pdf")
     savefig(time_plot, "results/boxplot_time.pdf")
 end

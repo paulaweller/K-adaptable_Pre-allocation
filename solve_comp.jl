@@ -17,7 +17,7 @@ function solve_comp(inst::AllocationInstance)
 
     # calculate edge cost, which is the euclidian distances of demand points
     c = reshape([norm(inst.loc_I[i,:]-inst.loc_J[j,:]) for j in 1:J for i in 1:I],I,J)
-    c_slack = 10*max(c...)
+    c_slack = 1+max(c...)
     # enumerate uncertainty set
     t_start = now()
     U = enum_uncset(inst)
